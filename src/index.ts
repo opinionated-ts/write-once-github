@@ -53,8 +53,12 @@ export function githubPlugin(): PluginContribution {
           const token = process.env["GITHUB_TOKEN"];
           const root = context.workingDirectory;
           await mkdir(root, { recursive: true });
+          // A source can feed multiple destinations; prepare its content only once per run.
+          const uniqueReferences = new Map(
+            references.map((reference) => [reference.source, reference]),
+          );
           const prepared = await Promise.all(
-            references.map(async (reference, index) => {
+            [...uniqueReferences.values()].map(async (reference, index) => {
               const { resolved, text } = await prepareGitHubFile(
                 parseGitHubReference(reference.source),
                 token,
