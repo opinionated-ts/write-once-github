@@ -1,8 +1,26 @@
 {
-  "name": "@opinionated-ts/package-template",
+  "name": "@opinionated-ts/write-once-github",
+  "description": "Official GitHub repository integration for write-once.",
+  "keywords": [
+    "github",
+    "integration",
+    "opinionated-ts",
+    "plugin",
+    "repository",
+    "write-once"
+  ],
+  "homepage": "https://github.com/opinionated-ts/write-once-github#readme",
+  "bugs": {
+    "url": "https://github.com/opinionated-ts/write-once-github/issues"
+  },
+  "license": "MIT",
+  "author": {
+    "name": "Opinionated TS",
+    "url": "https://github.com/opinionated-ts"
+  },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/opinionated-ts/package-template.git"
+    "url": "git+https://github.com/opinionated-ts/write-once-github.git"
   },
   "files": [
     "dist"
@@ -29,10 +47,6 @@
     "build": "tsdown",
     "build:watch": "tsdown --watch",
     "start": "bun run build && bun ./dist/index.mjs"
-  },
-  "dependencies": {
-    "@opinionated-ts/error-factory": "^1.0.1",
-    "@opinionated-ts/result": "^1.0.0"
   },
   "devDependencies": {
     "@opinionated-ts/config": "^1.9.1",
