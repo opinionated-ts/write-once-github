@@ -1,11 +1,13 @@
 {
   "name": "write-once-github",
-  "description": "Official GitHub repository integration for write-once.",
+  "description": "GitHub REST API provider for resolving repository files in Write Once.",
   "keywords": [
     "github",
+    "github-api",
     "integration",
     "opinionated-ts",
     "plugin",
+    "remote-files",
     "repository",
     "write-once"
   ],
@@ -46,7 +48,8 @@
     "audit": "bun audit fix --ignore GHSA-vfj7-8cjw-p6xm",
     "build": "tsdown",
     "build:watch": "tsdown --watch",
-    "start": "bun run build && bun ./dist/index.mjs"
+    "start": "bun run build && bun ./dist/index.mjs",
+    "prepack": "bun run build"
   },
   "devDependencies": {
     "@opinionated-ts/config": "^1.9.1",
@@ -56,7 +59,11 @@
     "skills": "^1.7.1",
     "tsdown": "^0.23.1",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.3"
+    "vitest": "^5.0.3",
+    "write-once": "file:../write-once"
+  },
+  "peerDependencies": {
+    "write-once": "*"
   },
   "engines": {
     "bun": "^1.4.0"

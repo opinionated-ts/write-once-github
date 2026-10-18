@@ -14,10 +14,7 @@ export default defineConfig({
     // Custom import paths here
   ],
 
-  words: [
-    ...cspellConfig.words,
-    // Custom words here
-  ],
+  words: [...cspellConfig.words, "ratelimit", "unstub"],
 
   // Any additional custom configuration here
 });
