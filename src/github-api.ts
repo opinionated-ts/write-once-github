@@ -98,15 +98,23 @@ async function getRefNames(
   kind: "heads" | "tags",
   token?: string,
 ): Promise<readonly string[]> {
-  const refs = await request<RefResponse[]>(
-    `/repos/${encodeURIComponent(reference.owner)}/${encodeURIComponent(reference.repository)}/git/matching-refs/${kind}/`,
-    token,
-  );
   const prefix = `refs/${kind}/`;
-  return refs
-    .map(({ name }) => (name.startsWith(prefix) ? name.slice(prefix.length) : name))
-    .filter(Boolean)
-    .toSorted((a, b) => b.length - a.length || a.localeCompare(b));
+  const names: string[] = [];
+  for (let page = 1; ; page++) {
+    // GitHub caps pages at 100; keep requesting while a full page is returned.
+    // oxlint-disable-next-line eslint/no-await-in-loop
+    const refs = await request<RefResponse[]>(
+      `/repos/${encodeURIComponent(reference.owner)}/${encodeURIComponent(reference.repository)}/git/matching-refs/${kind}/?per_page=100&page=${page}`,
+      token,
+    );
+    names.push(
+      ...refs
+        .map(({ name }) => (name.startsWith(prefix) ? name.slice(prefix.length) : name))
+        .filter(Boolean),
+    );
+    if (refs.length < 100) break;
+  }
+  return names.toSorted((a, b) => b.length - a.length || a.localeCompare(b));
 }
 
 async function resolveRef(

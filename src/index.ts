@@ -112,6 +112,6 @@ export function githubPlugin(): PluginContribution {
   };
 }
 
-export { clearGitHubCaches, prepareGitHubFile } from "./github-api.js";
+export { prepareGitHubFile } from "./github-api.js";
 export { isGitHubReference, parseGitHubReference } from "./reference.js";
 export type { GitHubSourceReference } from "./reference.js";
