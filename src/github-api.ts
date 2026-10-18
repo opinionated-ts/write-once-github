@@ -82,14 +82,24 @@ async function getCommit(
       throw error;
     }),
   );
-  if (result.object.type === "commit") return result.object.sha;
-  if (result.object.type === "tag") {
-    const tag = await request<{ object: { sha: string; type: string } }>(
-      `/repos/${encodeURIComponent(reference.owner)}/${encodeURIComponent(reference.repository)}/git/tags/${result.object.sha}`,
+
+  let object = result.object;
+  const visited = new Set<string>();
+  while (object.type === "tag") {
+    if (visited.has(object.sha)) {
+      throw new Error(`GitHub tag ${JSON.stringify(ref)} contains a circular tag reference.`);
+    }
+    visited.add(object.sha);
+    // Annotated tags may point to another tag instead of directly to a commit.
+    // oxlint-disable-next-line eslint/no-await-in-loop
+    const tag = await request<GitReference>(
+      `/repos/${encodeURIComponent(reference.owner)}/${encodeURIComponent(reference.repository)}/git/tags/${object.sha}`,
       token,
     );
-    if (tag.object.type === "commit") return tag.object.sha;
+    object = tag.object;
   }
+
+  if (object.type === "commit") return object.sha;
   throw new Error(`GitHub ref ${JSON.stringify(ref)} does not resolve to a commit.`);
 }
 

@@ -26,6 +26,11 @@ describe("GitHub references", () => {
   ])("rejects invalid reference %s", (source) =>
     expect(() => parseGitHubReference(source)).toThrow(),
   );
+  it("rejects sources owned by another resolver", () => {
+    expect(() => parseGitHubReference("./src/index.ts")).toThrow(
+      "Unsupported GitHub source reference",
+    );
+  });
   it("recognizes provider references", () => {
     expect(isGitHubReference("repo:owner/repo/a.ts")).toBe(true);
     expect(isGitHubReference("./a.ts")).toBe(false);
