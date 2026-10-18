@@ -1,4 +1,4 @@
-import type { PluginContribution, ResourceContext, SourceReferenceContext } from "write-once";
+import type { PluginFactory, ResourceContext, SourceReferenceContext } from "write-once";
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -42,7 +42,7 @@ function getPreparedFile(source: string, context: ResourceContext): PreparedFile
  * References use `repo:owner/repository/path` or `repo:owner/repository@ref/path`.
  * Public repositories work anonymously; private repositories use `GITHUB_TOKEN`.
  */
-export function githubPlugin(): PluginContribution {
+export const githubPlugin: PluginFactory = () => {
   return {
     name: PLUGIN_ID,
     preparers: [
@@ -114,7 +114,7 @@ export function githubPlugin(): PluginContribution {
       },
     ],
   };
-}
+};
 
 export { prepareGitHubFile } from "./github-api.js";
 export { isGitHubReference, parseGitHubReference } from "./reference.js";
