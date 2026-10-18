@@ -28,9 +28,13 @@
     "dist"
   ],
   "type": "module",
+  "types": "./dist/index.d.mts",
   "exports": {
     ".": "./dist/index.mjs",
     "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "cspell": "cspell lint .",

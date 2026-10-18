@@ -1,11 +1,16 @@
 # write-once-github
 
-GitHub REST API provider for [Write Once](https://github.com/opinionated-ts/write-once). Resolves repository files without the GitHub CLI or a GitHub SDK.
+[![npm version](https://img.shields.io/npm/v/write-once-github)](https://www.npmjs.com/package/write-once-github)
+[![npm downloads](https://img.shields.io/npm/dm/write-once-github)](https://www.npmjs.com/package/write-once-github)
+[![CI](https://img.shields.io/github/actions/workflow/status/opinionated-ts/write-once-github/check-and-release.yml?label=CI)](https://github.com/opinionated-ts/write-once-github/actions/workflows/check-and-release.yml)
+[![License](https://img.shields.io/github/license/opinionated-ts/write-once-github)](https://github.com/opinionated-ts/write-once-github/blob/main/LICENSE)
+
+A [Write Once](https://github.com/opinionated-ts/write-once) plugin that resolves GitHub repository files through the REST API, without the GitHub CLI or an SDK.
 
 ## Install
 
 ```sh
-bun add write-once write-once-github
+bun add -d write-once write-once-github
 ```
 
 Register it in `write-once.config.ts`:
@@ -20,9 +25,10 @@ export default defineConfig({ plugins: [githubPlugin] });
 ## References
 
 - `repo:owner/repository/path/to/file.ts` uses the repository's actual default branch.
-- `repo:owner/repository@develop/path/to/file.ts` uses an explicit branch or tag. Branch names containing slashes are supported; branches take precedence over same-named tags.
+- `repo:owner/repository@develop/path/to/file.ts` uses an explicit branch or tag.
+- `repo:owner/repository@feature/nested/path/to/file.ts` supports branch names containing slashes.
 
-The core remains responsible for whole-file, named-fragment, and range selection.
+Branches take precedence over same-named tags. The core remains responsible for whole-file, named-fragment, and range selection.
 
 ## Authentication
 
