@@ -1,0 +1,43 @@
+version: 2
+
+updates:
+  - package-ecosystem: bun
+    directory: /
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      non-major-dependencies:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+      security-dependencies:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      non-major-dependencies:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+      security-dependencies:
+        applies-to: security-updates
+        patterns:
+          - "*"
