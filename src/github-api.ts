@@ -1,273 +1,287 @@
+import { execFile } from "node:child_process";
+import { access, lstat, mkdir, rename, rm } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { promisify } from "node:util";
+
 import type { GitHubSourceReference } from "./reference.js";
 
-const API_URL = "https://api.github.com";
-const API_VERSION = "2022-11-28";
-interface GitReference {
-  object: { sha: string; type: string };
-}
-interface TreeResponse {
-  truncated: boolean;
-  tree: Array<{ path: string; mode: string; type: string; sha: string; size?: number }>;
-}
-interface RefResponse {
-  name: string;
-}
-interface BlobResponse {
-  encoding: string;
-  content: string;
-}
-export interface GitHubFile {
-  path: string;
-  sha: string;
-  size?: number;
-}
-export interface ResolvedGitHubReference {
-  owner: string;
-  repository: string;
+import { getRepositoryUrl } from "./repository-url.js";
+
+const execFileAsync = promisify(execFile);
+const preparations = new Map<string, Promise<string>>();
+
+interface RemoteRef {
   ref: string;
   commit: string;
+  kind: "branch" | "tag" | "commit";
   path: string;
-  blob: GitHubFile;
 }
-const treeCache = new Map<string, Promise<readonly GitHubFile[]>>();
-const contentCache = new Map<string, Promise<string>>();
-const repoKey = (reference: Pick<GitHubSourceReference, "owner" | "repository">) =>
-  `${reference.owner}/${reference.repository}`;
 
-async function request<T>(path: string, token?: string): Promise<T> {
-  const response = await fetch(`${API_URL}${path}`, {
-    headers: {
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": API_VERSION,
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-  });
-  if (!response.ok) {
-    const retryAfter = response.headers.get("retry-after");
-    const limited =
-      response.status === 429 ||
-      (response.status === 403 &&
-        (response.headers.get("x-ratelimit-remaining") === "0" || retryAfter !== null));
-    const reason =
-      response.status === 401
-        ? "Authentication failed. Check GITHUB_TOKEN."
-        : response.status === 404
-          ? "Repository, ref, or file was not found, or the token cannot access it."
-          : limited
-            ? `GitHub rate limit reached.${retryAfter ? ` Retry after ${retryAfter} seconds.` : " Wait for the rate limit to reset."}`
-            : response.status === 403
-              ? "GitHub denied access. Check token repository access and Contents: Read-only / Metadata: Read-only permissions."
-              : `GitHub API request failed with HTTP ${response.status}.`;
-    throw new Error(`${reason} (${response.status} ${response.statusText}; ${path}).`);
+interface PreparedGitHubFile {
+  root: string;
+  path: string;
+  resolved: {
+    owner: string;
+    repository: string;
+    ref: string;
+    commit: string;
+    path: string;
+  };
+}
+
+function gitEnvironment(token?: string): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  // Git authentication uses an HTTP header so credentials are not embedded in the remote URL.
+  if (token) {
+    env["GIT_CONFIG_COUNT"] = "1";
+    env["GIT_CONFIG_KEY_0"] = "http.extraheader";
+    env["GIT_CONFIG_VALUE_0"] =
+      `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`;
   }
-  // The response shape is endpoint-specific and defined at each call site.
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion
-  return (await response.json()) as T;
+  return env;
 }
 
-async function getCommit(
-  reference: GitHubSourceReference,
-  ref: string,
-  token?: string,
+async function git(
+  args: string[],
+  options: { cwd?: string; token?: string } = {},
 ): Promise<string> {
-  const encoded = ref.split("/").map(encodeURIComponent).join("/");
-  const result = await request<GitReference>(
-    `/repos/${encodeURIComponent(reference.owner)}/${encodeURIComponent(reference.repository)}/git/ref/heads/${encoded}`,
-    token,
-  ).catch(async (error: unknown) =>
-    request<GitReference>(
-      `/repos/${encodeURIComponent(reference.owner)}/${encodeURIComponent(reference.repository)}/git/ref/tags/${encoded}`,
-      token,
-    ).catch(() => {
-      throw error;
+  try {
+    const { stdout } = await execFileAsync("git", args, {
+      cwd: options.cwd,
+      env: gitEnvironment(options.token),
+      maxBuffer: 10 * 1024 * 1024,
+      windowsHide: true,
+    });
+    return stdout.trim();
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Git command failed: ${detail}`, { cause: error });
+  }
+}
+
+function safeSegment(value: string): string {
+  return encodeURIComponent(value);
+}
+
+async function getRemoteRef(reference: GitHubSourceReference, token?: string): Promise<RemoteRef> {
+  const url = getRepositoryUrl(reference);
+  const requested = reference.ref;
+  if (!requested) {
+    const output = await git(["ls-remote", "--symref", url, "HEAD"], { token });
+    const lines = output.split("\n").filter(Boolean);
+    const symbolicHead = lines.find((line) => line.startsWith("ref: ") && line.endsWith("\tHEAD"));
+    const headRef = symbolicHead?.slice(5).split("\t", 1)[0];
+    const headSha = lines
+      .find((line) => line.endsWith("\tHEAD") && !line.startsWith("ref: "))
+      ?.split("\t", 1)[0];
+    if (!headRef || !headSha)
+      throw new Error(
+        `Could not determine the default branch for ${reference.owner}/${reference.repository}.`,
+      );
+    return {
+      ref: headRef.slice("refs/heads/".length),
+      commit: headSha,
+      kind: "branch",
+      path: reference.path,
+    };
+  }
+
+  if (/^(?:[\da-f]{40}|[\da-f]{64})$/i.test(requested))
+    return { ref: requested, commit: requested, kind: "commit", path: reference.path };
+
+  // A slash can belong to either a branch name or the file path, so match the longest remote ref prefix.
+  const pathParts = reference.path.split("/");
+  const candidates = [
+    requested,
+    ...pathParts
+      .slice(0, -1)
+      .map((_, index) => [requested, ...pathParts.slice(0, index + 1)].join("/")),
+  ];
+  const patterns = candidates.flatMap((candidate) => [
+    `refs/heads/${candidate}`,
+    `refs/tags/${candidate}`,
+    `refs/tags/${candidate}^{}`,
+  ]);
+  const output = await git(["ls-remote", url, ...patterns], { token });
+  const refs = new Map<string, string>();
+  for (const line of output.split("\n").filter(Boolean)) {
+    const [sha, name] = line.split("\t");
+    if (sha && name) refs.set(name, sha);
+  }
+
+  for (let index = candidates.length - 1; index >= 0; index--) {
+    const candidate = candidates[index]!;
+    const branch = refs.get(`refs/heads/${candidate}`);
+    if (branch) {
+      return {
+        ref: candidate,
+        commit: branch,
+        kind: "branch",
+        path: pathParts.slice(index).join("/"),
+      };
+    }
+    const tag = refs.get(`refs/tags/${candidate}^{}`) ?? refs.get(`refs/tags/${candidate}`);
+    if (tag) {
+      return {
+        ref: candidate,
+        commit: tag,
+        kind: "tag",
+        path: pathParts.slice(index).join("/"),
+      };
+    }
+  }
+  throw new Error(
+    `Git reference ${JSON.stringify(requested)} was not found in ${reference.owner}/${reference.repository}.`,
+  );
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function assertSafeFile(root: string, filePath: string): Promise<void> {
+  if (
+    !filePath ||
+    filePath.startsWith("/") ||
+    filePath.includes("\\") ||
+    filePath.split("/").some((part) => !part || part === "." || part === "..")
+  ) {
+    throw new Error(`Unsafe GitHub file path ${JSON.stringify(filePath)}.`);
+  }
+
+  const parts = filePath.split("/");
+  const entries = await Promise.all(
+    parts.map(async (_, index) => {
+      const path = join(root, ...parts.slice(0, index + 1));
+      try {
+        return await lstat(path);
+      } catch {
+        throw new Error(
+          `File ${JSON.stringify(filePath)} was not found in the prepared GitHub repository.`,
+        );
+      }
     }),
   );
-
-  let object = result.object;
-  const visited = new Set<string>();
-  while (object.type === "tag") {
-    if (visited.has(object.sha)) {
-      throw new Error(`GitHub tag ${JSON.stringify(ref)} contains a circular tag reference.`);
-    }
-    visited.add(object.sha);
-    // Annotated tags may point to another tag instead of directly to a commit.
-    // oxlint-disable-next-line eslint/no-await-in-loop
-    const tag = await request<GitReference>(
-      `/repos/${encodeURIComponent(reference.owner)}/${encodeURIComponent(reference.repository)}/git/tags/${object.sha}`,
-      token,
-    );
-    object = tag.object;
+  for (const [index, info] of entries.entries()) {
+    if (info.isSymbolicLink())
+      throw new Error(`GitHub file path ${JSON.stringify(filePath)} traverses a symbolic link.`);
+    if (index < entries.length - 1 && !info.isDirectory())
+      throw new Error(
+        `GitHub file path ${JSON.stringify(filePath)} contains a non-directory parent.`,
+      );
+    if (index === entries.length - 1 && !info.isFile())
+      throw new Error(`GitHub path ${JSON.stringify(filePath)} is not a regular file.`);
   }
-
-  if (object.type === "commit") return object.sha;
-  throw new Error(`GitHub ref ${JSON.stringify(ref)} does not resolve to a commit.`);
 }
 
-async function getRefNames(
+async function isReusable(path: string, commit: string, token?: string): Promise<boolean> {
+  if (!(await pathExists(join(path, ".git")))) return false;
+  try {
+    const [head, status] = await Promise.all([
+      git(["rev-parse", "HEAD"], { cwd: path, token }),
+      git(["status", "--porcelain"], { cwd: path, token }),
+    ]);
+    return head === commit && status === "";
+  } catch {
+    return false;
+  }
+}
+
+async function checkoutRepository(
   reference: GitHubSourceReference,
-  kind: "heads" | "tags",
+  root: string,
+  remote: RemoteRef,
   token?: string,
-): Promise<readonly string[]> {
-  const prefix = `refs/${kind}/`;
-  const names: string[] = [];
-  for (let page = 1; ; page++) {
-    // GitHub caps pages at 100; keep requesting while a full page is returned.
-    // oxlint-disable-next-line eslint/no-await-in-loop
-    const refs = await request<RefResponse[]>(
-      `/repos/${encodeURIComponent(reference.owner)}/${encodeURIComponent(reference.repository)}/git/matching-refs/${kind}/?per_page=100&page=${page}`,
-      token,
+): Promise<void> {
+  const parent = dirname(root);
+  await mkdir(parent, { recursive: true });
+  const temporary = `${root}.tmp-${process.pid}-${crypto.randomUUID()}`;
+  await rm(temporary, { recursive: true, force: true });
+  try {
+    await git(
+      [
+        "clone",
+        "--filter=blob:none",
+        "--no-checkout",
+        "--",
+        getRepositoryUrl(reference),
+        temporary,
+      ],
+      { token },
     );
-    names.push(
-      ...refs
-        .map(({ name }) => (name.startsWith(prefix) ? name.slice(prefix.length) : name))
-        .filter(Boolean),
-    );
-    if (refs.length < 100) break;
+    const fetchRef =
+      remote.kind === "branch"
+        ? `refs/heads/${remote.ref}`
+        : remote.kind === "tag"
+          ? `refs/tags/${remote.ref}`
+          : remote.commit;
+    await git(["fetch", "--depth=1", "origin", fetchRef], { cwd: temporary, token });
+    await git(["checkout", "--detach", remote.commit], { cwd: temporary, token });
+    await rm(root, { recursive: true, force: true });
+    await rename(temporary, root);
+  } catch (error) {
+    await rm(temporary, { recursive: true, force: true });
+    throw error;
   }
-  return names.toSorted((a, b) => b.length - a.length || a.localeCompare(b));
 }
 
-async function resolveRef(
-  reference: GitHubSourceReference,
-  token?: string,
-): Promise<{ ref: string; path: string; commit: string }> {
-  if (reference.ref === undefined) {
-    const repository = await request<{ default_branch: string }>(
-      `/repos/${encodeURIComponent(reference.owner)}/${encodeURIComponent(reference.repository)}`,
-      token,
-    );
-    const ref = repository.default_branch;
-    return { ref, path: reference.path, commit: await getCommit(reference, ref, token) };
-  }
-  const [branches, tags] = await Promise.all([
-    getRefNames(reference, "heads", token),
-    getRefNames(reference, "tags", token),
-  ]);
-  const branchSet = new Set(branches);
-  const tagSet = new Set(tags);
-  const candidates = [...reference.ref.split("/"), ...reference.path.split("/")];
-  let length = 0;
-  for (let index = candidates.length; index > 0; index--) {
-    const candidate = candidates.slice(0, index).join("/");
-    if (branchSet.has(candidate) || tagSet.has(candidate)) {
-      length = index;
-      break;
-    }
-  }
-  if (!length)
-    throw new Error(
-      `GitHub ref ${JSON.stringify(reference.ref)} was not found in ${repoKey(reference)}. Check the branch or tag name.`,
-    );
-  const ref = candidates.slice(0, length).join("/");
-  const path = candidates.slice(length).join("/");
-  return { ref, path, commit: await getCommit(reference, ref, token) };
-}
-
-async function getTree(
-  reference: GitHubSourceReference,
-  commit: string,
-  token?: string,
-): Promise<readonly GitHubFile[]> {
-  const key = `${repoKey(reference)}@${commit}`;
-  let pending = treeCache.get(key);
-  if (!pending) {
-    pending = request<TreeResponse>(
-      `/repos/${encodeURIComponent(reference.owner)}/${encodeURIComponent(reference.repository)}/git/trees/${commit}?recursive=1`,
-      token,
-    )
-      .then((result) => {
-        if (result.truncated)
-          throw new Error(
-            `GitHub returned a truncated file tree for ${repoKey(reference)}@${commit}; the requested file cannot be verified safely.`,
-          );
-        return result.tree
-          .filter((entry) => entry.type === "blob" && entry.mode !== "120000")
-          .map(({ path, sha, size }) => {
-            const file: GitHubFile = { path, sha };
-            if (size !== undefined) file.size = size;
-            return file;
-          });
-      })
-      .catch((error: unknown) => {
-        treeCache.delete(key);
-        throw error;
-      });
-    treeCache.set(key, pending);
-  }
-  return await pending;
-}
-
-async function getText(
-  reference: GitHubSourceReference,
-  blob: GitHubFile,
-  token?: string,
-): Promise<string> {
-  const key = `${repoKey(reference)}@${blob.sha}`;
-  let pending = contentCache.get(key);
-  if (!pending) {
-    pending = request<BlobResponse>(
-      `/repos/${encodeURIComponent(reference.owner)}/${encodeURIComponent(reference.repository)}/git/blobs/${blob.sha}`,
-      token,
-    )
-      .then((result) => {
-        if (result.encoding !== "base64")
-          throw new Error(
-            `GitHub returned unsupported blob encoding ${JSON.stringify(result.encoding)} for ${blob.path}.`,
-          );
-        const bytes = Uint8Array.from(atob(result.content.replace(/\s/g, "")), (character) =>
-          character.charCodeAt(0),
-        );
-        if (bytes.includes(0))
-          throw new Error(
-            `GitHub file ${JSON.stringify(blob.path)} is binary and cannot be used as text.`,
-          );
-        try {
-          return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-        } catch {
-          throw new Error(`GitHub file ${JSON.stringify(blob.path)} is not valid UTF-8 text.`);
-        }
-      })
-      .catch((error: unknown) => {
-        contentCache.delete(key);
-        throw error;
-      });
-    contentCache.set(key, pending);
-  }
-  return await pending;
-}
-
+/** Prepares a local checkout and returns the requested file's path within it. */
 export async function prepareGitHubFile(
   reference: GitHubSourceReference,
+  workingDirectory: string,
   token?: string,
-): Promise<{ resolved: ResolvedGitHubReference; text: string }> {
-  const selected = await resolveRef(reference, token);
+): Promise<PreparedGitHubFile> {
   if (
-    !selected.path ||
-    selected.path.startsWith("/") ||
-    selected.path.split("/").some((part) => !part || part === "." || part === "..")
+    !reference.path ||
+    reference.path.startsWith("/") ||
+    reference.path.includes("\\") ||
+    reference.path.split("/").some((part) => !part || part === "." || part === "..")
   ) {
-    throw new Error(`Unsafe GitHub file path ${JSON.stringify(selected.path)}.`);
+    throw new Error(`Unsafe GitHub file path ${JSON.stringify(reference.path)}.`);
   }
-  const tree = await getTree(reference, selected.commit, token);
-  const blob = tree.find((file) => file.path === selected.path);
-  if (!blob)
-    throw new Error(
-      `File ${JSON.stringify(selected.path)} was not found in ${repoKey(reference)}@${selected.ref}. Check the path and ref.`,
-    );
+  const remote = await getRemoteRef(reference, token);
+  const state =
+    remote.kind === "commit"
+      ? `commit-${remote.commit}`
+      : `${remote.kind}-${safeSegment(remote.ref)}`;
+  const root = join(workingDirectory, reference.owner, reference.repository, state);
+  const key = `${root}\0${remote.commit}`;
+  let pending = preparations.get(key);
+  if (!pending) {
+    pending = (async () => {
+      if (!(await isReusable(root, remote.commit, token)))
+        await checkoutRepository(reference, root, remote, token);
+      return root;
+    })().catch((error: unknown) => {
+      if (preparations.get(key) === pending) preparations.delete(key);
+      throw error;
+    });
+    preparations.set(key, pending);
+  }
+  try {
+    await pending;
+  } finally {
+    if (preparations.get(key) === pending) preparations.delete(key);
+  }
+  await assertSafeFile(root, remote.path);
   return {
+    root,
+    path: remote.path,
     resolved: {
       owner: reference.owner,
       repository: reference.repository,
-      ref: selected.ref,
-      commit: selected.commit,
-      path: selected.path,
-      blob,
+      ref: remote.ref,
+      commit: remote.commit,
+      path: remote.path,
     },
-    text: await getText(reference, blob, token),
   };
 }
 
 export function clearGitHubCaches(): void {
-  treeCache.clear();
-  contentCache.clear();
+  preparations.clear();
 }

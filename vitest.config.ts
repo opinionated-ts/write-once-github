@@ -5,6 +5,7 @@ export default defineConfig({
     tsconfigPaths: true,
   },
   test: {
+    testTimeout: 20_000,
     coverage: {
       provider: "istanbul",
       reporter: ["text", "html", "lcov"],

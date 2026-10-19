@@ -14,7 +14,7 @@ export default defineConfig({
     // Custom import paths here
   ],
 
-  words: [...cspellConfig.words, "ratelimit", "unstub"],
+  words: [...cspellConfig.words, "extraheader", "gpgsign", "ratelimit", "symref", "unstub"],
 
   // Any additional custom configuration here
 });

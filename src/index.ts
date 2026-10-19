@@ -1,24 +1,21 @@
 import type { PluginFactory, ResourceContext, SourceReferenceContext } from "write-once";
 
-import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
-
 import { prepareGitHubFile } from "./github-api.js";
 import { isGitHubReference, parseGitHubReference } from "./reference.js";
 
 interface PreparedFile {
+  root: string;
   path: string;
   owner: string;
   repository: string;
   ref: string;
   commit: string;
   sourcePath: string;
-  blobSha: string;
 }
 const PLUGIN_ID = "write-once-github";
 function isPreparedFile(value: unknown): value is PreparedFile {
   if (typeof value !== "object" || value === null) return false;
-  return ["path", "owner", "repository", "ref", "commit", "sourcePath", "blobSha"].every(
+  return ["root", "path", "owner", "repository", "ref", "commit", "sourcePath"].every(
     (key) => typeof Reflect.get(value, key) === "string",
   );
 }
@@ -52,38 +49,42 @@ export const githubPlugin: PluginFactory = () => {
         async prepare(references, context) {
           const token = process.env["GITHUB_TOKEN"];
           const root = context.workingDirectory;
-          await mkdir(root, { recursive: true });
-          // A source can feed multiple destinations; prepare its content only once per run.
+
+          // A source can feed multiple destinations; materialize it only once per run.
           const uniqueReferences = new Map(
             references.map((reference) => [reference.source, reference]),
           );
-          const prepared = await Promise.all(
-            [...uniqueReferences.values()].map(async (reference, index) => {
-              const { resolved, text } = await prepareGitHubFile(
+          const preparedFiles = await Promise.all(
+            [...uniqueReferences.values()].map(async (reference) => {
+              const prepared = await prepareGitHubFile(
                 parseGitHubReference(reference.source),
+                root,
                 token,
               );
-              const path = `files/${index}.txt`;
-              const destination = join(root, path);
-              await mkdir(dirname(destination), { recursive: true });
-              await writeFile(destination, text, "utf8");
               return {
                 source: reference.source,
                 metadata: {
-                  path,
-                  owner: resolved.owner,
-                  repository: resolved.repository,
-                  ref: resolved.ref,
-                  commit: resolved.commit,
-                  sourcePath: resolved.path,
-                  blobSha: resolved.blob.sha,
+                  root: prepared.root,
+                  path: prepared.path,
+                  owner: prepared.resolved.owner,
+                  repository: prepared.resolved.repository,
+                  ref: prepared.resolved.ref,
+                  commit: prepared.resolved.commit,
+                  sourcePath: prepared.resolved.path,
                 } satisfies PreparedFile,
               };
             }),
           );
           const files: Record<string, PreparedFile> = {};
-          for (const file of prepared) files[file.source] = file.metadata;
-          return { resources: [{ root, metadata: { provider: "github" } }], metadata: { files } };
+          const resources = new Map<string, { root: string; metadata: { provider: string } }>();
+          for (const file of preparedFiles) {
+            files[file.source] = file.metadata;
+            resources.set(file.metadata.root, {
+              root: file.metadata.root,
+              metadata: { provider: "github" },
+            });
+          }
+          return { resources: [...resources.values()], metadata: { files } };
         },
       },
     ],
@@ -99,7 +100,7 @@ export const githubPlugin: PluginFactory = () => {
             throw new Error(`No GitHub preparation was assigned to ${JSON.stringify(source)}.`);
           const file = getPreparedFile(source, context);
           return {
-            root: preparation.result.resources[0]!.root,
+            root: file.root,
             path: file.path,
             metadata: {
               provider: "github",
@@ -107,7 +108,6 @@ export const githubPlugin: PluginFactory = () => {
               ref: file.ref,
               commit: file.commit,
               sourcePath: file.sourcePath,
-              blobSha: file.blobSha,
             },
           };
         },
