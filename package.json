@@ -1,14 +1,13 @@
 {
   "name": "write-once-github",
-  "description": "GitHub REST API provider for resolving repository files in Write Once.",
+  "description": "Resolve GitHub repository files from a single source of truth in Write Once.",
   "keywords": [
+    "content-synchronization",
+    "documentation-sync",
+    "fragment-reuse",
     "github",
-    "github-api",
-    "integration",
-    "opinionated-ts",
-    "plugin",
-    "remote-files",
-    "repository",
+    "repository-files",
+    "text-reuse",
     "write-once"
   ],
   "homepage": "https://github.com/opinionated-ts/write-once-github#readme",
@@ -20,6 +19,12 @@
     "name": "Opinionated TS",
     "url": "https://github.com/opinionated-ts"
   },
+  "contributors": [
+    {
+      "name": "Daniel A. Hernández Ochoa",
+      "url": "https://github.com/DanhezCode"
+    }
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/opinionated-ts/write-once-github.git"
