@@ -220,12 +220,26 @@ describe("prepareGitHubFile", () => {
       sourceReference(firstSource, "README.md"),
       sourceReference(secondSource, "docs.md"),
     ];
-    const result = await preparer.prepare(references, {
+    const workspaceDirectory = join(setup.root, "workspace");
+    const progress = vi.fn();
+    const firstRunContext = {
       cwd: setup.root,
-      workingDirectory: setup.root,
-    });
+      workingDirectory: join(setup.root, "run-1"),
+      workspaceDirectory,
+      reportProgress: progress,
+    };
+    const result = await preparer.prepare(references, firstRunContext);
     expect(result.resources).toHaveLength(1);
-    const preparation = { preparerId: "write-once-github", workingDirectory: setup.root, result };
+    expect(result.resources[0]?.root).toBe(
+      join(workspaceDirectory, "owner", "repo", "branch-main"),
+    );
+    expect(progress).toHaveBeenCalled();
+    const preparation = {
+      preparerId: "write-once-github",
+      workingDirectory: join(setup.root, "run-1"),
+      workspaceDirectory,
+      result,
+    };
     expect(resolver.canResolve("./local.ts", { cwd: setup.root })).toBe(false);
     expect(
       resolver.canResolve(firstSource, {
@@ -257,6 +271,25 @@ describe("prepareGitHubFile", () => {
     expect(first.path).toBe("src/index.ts");
     expect(second.path).toBe("docs/guide.md");
     expect(await readFile(join(first.root, first.path), "utf8")).toContain("main");
+
+    const secondRunContext = {
+      cwd: setup.root,
+      workingDirectory: join(setup.root, "run-2"),
+      workspaceDirectory,
+      reportProgress: progress,
+    };
+    const secondRun = await preparer.prepare(references, secondRunContext);
+    expect(secondRun.resources[0]?.root).toBe(result.resources[0]?.root);
+    expect(await readFile(join(secondRun.resources[0]!.root, "src/index.ts"), "utf8")).toContain(
+      "main",
+    );
+
+    const legacyContext = {
+      cwd: setup.root,
+      workingDirectory: join(setup.root, "legacy-run"),
+    };
+    const legacyRun = await preparer.prepare(references, legacyContext);
+    expect(legacyRun.resources[0]?.root).toContain(legacyContext.workingDirectory);
   });
 
   it("reuses a clean checkout and accepts an HTTPS token", async () => {

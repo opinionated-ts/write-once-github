@@ -1,4 +1,9 @@
-import type { PluginFactory, ResourceContext, SourceReferenceContext } from "write-once";
+import type {
+  PluginFactory,
+  ResourceContext,
+  ResourcePreparationContext,
+  SourceReferenceContext,
+} from "write-once";
 
 import { prepareGitHubFile } from "./github-api.js";
 import { isGitHubReference, parseGitHubReference } from "./reference.js";
@@ -13,6 +18,10 @@ interface PreparedFile {
   sourcePath: string;
 }
 const PLUGIN_ID = "write-once-github";
+type GitHubPreparationContext = ResourcePreparationContext & {
+  workspaceDirectory?: string;
+  reportProgress?: (message: string) => void;
+};
 function isPreparedFile(value: unknown): value is PreparedFile {
   if (typeof value !== "object" || value === null) return false;
   return ["root", "path", "owner", "repository", "ref", "commit", "sourcePath"].every(
@@ -41,14 +50,19 @@ function getPreparedFile(source: string, context: ResourceContext): PreparedFile
  */
 export const githubPlugin: PluginFactory = () => {
   return {
-    name: PLUGIN_ID,
+    name: "GitHub",
     preparers: [
       {
         id: PLUGIN_ID,
         canPrepare: (reference: SourceReferenceContext) => isGitHubReference(reference.source),
         async prepare(references, context) {
           const token = process.env["GITHUB_TOKEN"];
-          const root = context.workingDirectory;
+          const preparationContext = context as GitHubPreparationContext;
+          const root = preparationContext.workspaceDirectory ?? context.workingDirectory;
+
+          preparationContext.reportProgress?.(
+            "Resolving repository references and preparing local checkouts.",
+          );
 
           // A source can feed multiple destinations; materialize it only once per run.
           const uniqueReferences = new Map(
@@ -61,6 +75,7 @@ export const githubPlugin: PluginFactory = () => {
                 root,
                 token,
               );
+              preparationContext.reportProgress?.(`Prepared ${reference.source}.`);
               return {
                 source: reference.source,
                 metadata: {
